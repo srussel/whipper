@@ -20,13 +20,15 @@
 
 import argparse
 import cdio
+import configparser
 import importlib.util
 import os
 import glob
 import logging
+import tempfile
 from whipper.command.basecommand import BaseCommand
 from whipper.common import (
-    accurip, config, drive, program, task
+    accurip, config, drive, mbngs, program, task
 )
 from whipper.common.common import validate_template
 from whipper.program import cdrdao, cdparanoia, utils
@@ -146,6 +148,9 @@ class _CD(BaseCommand):
                             "--cdr not passed")
             return -1
 
+        if self.options.edit:
+            self.editMetadata()
+
         # Change working directory before cdrdao's task
         if getattr(self.options, 'working_directory', False):
             os.chdir(os.path.expanduser(self.options.working_directory))
@@ -211,6 +216,147 @@ class _CD(BaseCommand):
     def doCommand(self):
         pass
 
+    def editMetadata(self):
+        while (True):
+            cmd = input("\n[e] edit metadata, [v] view metadata, or press enter to continue: ")
+            if not cmd:
+                break
+
+            if cmd == 'v':
+                self.listMetadata()
+
+            if cmd == 'e':
+                if not self.program.metadata:
+                    self.createEmptyMetadata()
+                (fd, path) = tempfile.mkstemp(suffix='.txt', text=True)
+                self.writeMetadata(path)
+                editor = os.getenv("EDITOR")
+                if not editor:
+                    editor = "vi"
+                os.system(editor + " " + path)
+                self.readMetadata(path)
+                os.remove(path)
+
+    def listMetadata(self):
+        metadata = self.program.metadata
+        if not metadata:
+            print("No metadata")
+            return
+        print("")
+        print("Release Title:", metadata.releaseTitle)
+        print("        Title:", metadata.title)
+        print("       Artist:", metadata.artist)
+        print("  Artist Sort:", metadata.sortName)
+        print("         Date:", metadata.release)
+        print("")
+        for i, track in enumerate(metadata.tracks):
+            print("%02d." % (i+1), track.title)
+            if track.artist != metadata.artist:
+                print("     ", track.artist)
+
+    def createEmptyMetadata(self):
+        metadata = mbngs.DiscMetadata()
+        metadata.title = ''
+        metadata.releaseTitle = ''
+        metadata.artist = ''
+        metadata.sortName = ''
+        metadata.release = '2000-01-01'
+        for i in range(self.ittoc.getAudioTracks()):
+            track = mbngs.TrackMetadata()
+            track.title = ''
+            track.artist = ''
+            track.mbidWorks = set()
+            track.composers = set()
+            track.performers = set()
+            metadata.tracks.append(track)
+        self.program.metadata = metadata
+
+    def writeMetadata(self, path):
+        metadata = self.program.metadata
+        config = configparser.ConfigParser(interpolation=None, allow_no_value=True)
+        config.optionxform = str # preserve case
+        config.add_section('Album')
+        config.set('Album', '; Album title with disambiguation (%d)')
+        config.set('Album', 'ReleaseTitle', metadata.releaseTitle)
+        config.set('Album', '; Album title without disambiguation (%D)')
+        config.set('Album', 'Title', metadata.title)
+        config.set('Album', '; Album artist and default track artist for all tracks with track artist commented out')
+        config.set('Album', 'Artist', metadata.artist)
+        config.set('Album', '; If commented out, defaults to Artist')
+        if metadata.sortName == metadata.artist:
+            config.set('Album', ';ArtistSort', metadata.sortName)
+        else:
+            config.set('Album', 'ArtistSort', metadata.sortName)
+        config.set('Album', 'Date', metadata.release)
+
+        config.add_section('Track All')
+        config.set('Track All', '; Uncomment to enable title template for all tracks. All other track sections will be ignored.')
+        config.set('Track All', ';Title', "Track %d")
+        config.set('Track All', 'StartNum', '1')
+
+        for i, track in enumerate(metadata.tracks):
+            section = "Track %d" % (i + 1)
+            config.add_section(section)
+            config.set(section, 'Title', track.title)
+            if i == 0:
+                config.set(section, "; Specify artist in track section to override default artist for individual tracks")
+            if track.artist != metadata.artist:
+                config.set(section, 'Artist', track.artist)
+            elif i == 0:
+                config.set(section, ';Artist', track.artist)
+
+        with open(path, 'w') as configfile:
+            config.write(configfile)
+
+    def getConfigValue(self, config, section, key, section_required=True, key_required=True):
+        if section not in config:
+            if section_required:
+                print(f"[{section}] missing")
+            return None
+        if key in config[section]:
+            return config[section][key]
+        else:
+            if key_required:
+                print(f"[{section}][{key}] missing")
+            return None
+
+    def readMetadata(self, path):
+        metadata = self.program.metadata
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(path)
+        metadata.title = self.getConfigValue(config, 'Album', 'Title')
+        metadata.releaseTitle = self.getConfigValue(config, 'Album', 'ReleaseTitle')
+        metadata.artist = self.getConfigValue(config, 'Album', 'Artist')
+        metadata.sortName = self.getConfigValue(config, 'Album', 'ArtistSort', key_required=False)
+        if not metadata.sortName:
+            metadata.sortName = metadata.artist
+        metadata.release = self.getConfigValue(config, 'Album', 'Date')
+        if not metadata.title or not metadata.artist or not metadata.release:
+            return
+
+        title_all = self.getConfigValue(config, 'Track All', 'Title', section_required=False, key_required=False)
+        if title_all:
+            start_num = self.getConfigValue(config, 'Track All', 'StartNum', key_required=False)
+            try:
+                i = int(start_num)
+            except:
+                i = 1
+            for track in metadata.tracks:
+                track.title = title_all % i
+                track.artist = metadata.artist
+                i += 1
+            return
+
+        for i, track in enumerate(metadata.tracks):
+            section = "Track %d" % (i + 1)
+            track.title = self.getConfigValue(config, section, 'Title')
+            if not track.title:
+                return
+            track.artist = self.getConfigValue(config, section, 'Artist', key_required=False)
+            if not track.artist:
+                track.artist = metadata.artist
+            if not track.sortName:
+                track.sortName = track.artist
 
 class Info(_CD):
     summary = "retrieve information about the currently inserted CD"
@@ -321,11 +467,17 @@ Log files will log the path to tracks relative to this directory.
                                  "{}; 0 means "
                                  "infinity.".format(DEFAULT_MAX_RETRIES),
                                  default=DEFAULT_MAX_RETRIES)
+
         self.parser.add_argument('-k', '--keep-going',
                                  action='store_true',
                                  help="continue ripping further tracks "
                                  "instead of giving up if a track "
                                  "can't be ripped")
+
+        self.parser.add_argument('--edit',
+                                 action="store_true", dest="edit",
+                                 help="whether to prompt to edit metadata ",
+                                 default=False)
 
     def handle_arguments(self):
         self.options.output_directory = os.path.expanduser(

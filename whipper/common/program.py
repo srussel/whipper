@@ -476,12 +476,13 @@ class Program:
                 tags['DISCNUMBER'] = str(self.metadata.discNumber)
 
             if number > 0:
-                tags['MUSICBRAINZ_RELEASETRACKID'] = mbidTrack
-                tags['MUSICBRAINZ_TRACKID'] = mbidRecording
-                tags['MUSICBRAINZ_ARTISTID'] = mbidTrackArtist
-                tags['MUSICBRAINZ_ALBUMID'] = mbidRelease
-                tags['MUSICBRAINZ_RELEASEGROUPID'] = mbidReleaseGroup
-                tags['MUSICBRAINZ_ALBUMARTISTID'] = mbidReleaseArtist
+                if mbidRelease:
+                    tags['MUSICBRAINZ_RELEASETRACKID'] = mbidTrack
+                    tags['MUSICBRAINZ_TRACKID'] = mbidRecording
+                    tags['MUSICBRAINZ_ARTISTID'] = mbidTrackArtist
+                    tags['MUSICBRAINZ_ALBUMID'] = mbidRelease
+                    tags['MUSICBRAINZ_RELEASEGROUPID'] = mbidReleaseGroup
+                    tags['MUSICBRAINZ_ALBUMARTISTID'] = mbidReleaseArtist
                 if len(mbidWorks) > 0:
                     tags['MUSICBRAINZ_WORKID'] = mbidWorks
                 if len(composers) > 0:
